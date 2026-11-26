@@ -1,5 +1,6 @@
-import { classifyMacro, documentMetadata, glossaryTitle, macroCandidate, macroFile, systemFromPath, type Category, type Metadata, type Translation } from "./catalog-metadata";
+import { classifyMacro, documentMetadata, glossaryTitle, macroCandidate, macroFile, systemFromPath, UnsupportedMacroError, type Category, type Metadata, type Translation } from "./catalog-metadata";
 import { z } from "zod";
+import { analysisVersion, analyzeMacro, normalizeSystem, type MacroAnalysis } from "./catalog-analysis";
 import bundledCode from "./catalog/show-xp.js?raw";
 import licenseText from "./catalog/THEJOESTER-LICENSE.txt?raw";
 
@@ -9,6 +10,10 @@ export type CatalogEntry = {
   original?: Metadata; translated?: Translation; category?: Category; system?: string; inferredSystem?: boolean;
   dependencies?: string[]; inferredCategory?: boolean; updatedAt?: string; documentation?: string;
   enriched?: boolean; unsupported?: boolean; repoLicense?: string;
+  analysis?: MacroAnalysis; analyzerVersion?: number; sourceHash?: string; blobSha?: string;
+  documentationPaths?: string[]; documentationKey?: string; wiki?: boolean;
+  sourceMetadata?: Metadata; documentedMetadata?: Metadata; descriptionSource?: string;
+  rulesEdition?: "2014" | "2024";
 };
 
 export const bundled: CatalogEntry[] = [{
@@ -21,9 +26,9 @@ export const bundled: CatalogEntry[] = [{
   translated: {title:"Показать опыт", description:"Показывает опыт участников группы в чате PF2e."},
 }];
 
-const repository = z.object({ default_branch: z.string(), license: z.object({ spdx_id: z.string() }).nullable() });
+const repository = z.object({ default_branch: z.string(), license: z.object({ spdx_id: z.string() }).nullable(), has_wiki:z.boolean().optional() });
 const revision = z.object({ sha: z.string().regex(/^[a-f0-9]{40}$/), commit:z.object({committer:z.object({date:z.string()}).nullable()}).optional() });
-const paths = z.object({ truncated: z.boolean(), tree: z.array(z.object({ path: z.string(), type: z.string(), size: z.number().optional() })) });
+const paths = z.object({ truncated: z.boolean(), tree: z.array(z.object({ path: z.string(), type: z.string(), size: z.number().optional(), sha:z.string().optional() })) });
 const maxCodeBytes = 1_000_000;
 const revisionUrl = (entry: CatalogEntry) => `https://github.com/${entry.repo}/blob/${entry.commit}/${encodedPath(entry.path)}`;
 const encodedPath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
@@ -85,60 +90,122 @@ export async function refreshRepository(repo: string, cached?: CatalogEntry[], s
   if (cached && previous.commit === head.sha) return {entries:cached,state:next};
   const listing = paths.parse(await json(`${api}/git/trees/${head.sha}?recursive=1`));
   if (listing.truncated) throw new IncompleteRepositoryError("GitHub вернул неполное дерево. Выберите репозиторий меньшего размера.");
-  const documents = new Map(listing.tree.filter(file => file.type === "blob" && /\.md$/i.test(file.path) &&
-    (file.size ?? Infinity) <= 100_000).map(file => [file.path.toLowerCase(),file.path]));
+  const docs = listing.tree.filter(file => file.type === "blob" && /\.md$/i.test(file.path) && (file.size ?? Infinity) <= 100_000);
+  const documents = new Map(docs.map(file => [file.path.toLowerCase(),file]));
+  const oldEntries = new Map(cached?.map(entry=>[entry.path,entry]));
   return {state:next,entries:listing.tree.filter(file => file.type === "blob" && macroCandidate(file.path) &&
     (file.size ?? Infinity) <= maxCodeBytes).map(file => {
     const name = file.path.split("/").pop()!;
     const parent = file.path.includes("/") ? file.path.slice(0,file.path.lastIndexOf("/")+1) : "";
-    const documentation = [name.replace(/\.[^.]+$/,".md"),"readme.md","usage.md","documentation.md"].map(name => documents.get((parent+name).toLowerCase())).find(Boolean)
-      ?? documents.get("readme.md");
+    const stem = name.replace(/\.[^.]+$/,"").toLowerCase();
+    const related = docs.filter(doc=>doc.path.split("/").pop()?.toLowerCase() === stem+".md");
+    const candidates = [parent+stem+".md",parent+"readme.md",parent+"usage.md",parent+"documentation.md","readme.md",
+      ...related.map(doc=>doc.path),...docs.filter(doc=>/^(docs?|wiki)\//i.test(doc.path) && /macro|usage|readme/i.test(doc.path)).slice(0,4).map(doc=>doc.path)];
+    const files = [...new Set(candidates.map(path=>documents.get(path.toLowerCase())).filter(item=>item!==undefined))].slice(0,8);
+    const documentationPaths = files.map(doc=>doc.path);
+    const documentationKey = JSON.stringify([Boolean(info.has_wiki),...files.map(doc=>[doc.path,doc.sha ?? head.sha])]);
     const original = {title:name};
     const system = systemFromPath(file.path);
+    const old = oldEntries.get(file.path);
+    const unchanged = file.sha && old?.blobSha === file.sha ? old : undefined;
+    const metadata = unchanged?.documentationKey === documentationKey ? unchanged : undefined;
     return {
-      name, description:"", repo, path:file.path, commit:head.sha, author:"", license:"Не определена",
+      name, description:"", author:"", license:"Не определена",
       repoLicense:info.license?.spdx_id === "NOASSERTION" ? undefined : info.license?.spdx_id,
       compatibility:"Не проверена", original, translated:{title:glossaryTitle(name)}, system, inferredSystem:Boolean(system),
-      ...classifyMacro(original,file.path), updatedAt:head.commit?.committer?.date, documentation,
+      ...classifyMacro(original,file.path), ...metadata,
+      code:unchanged?.code, sourceHash:unchanged?.sourceHash, sourceMetadata:unchanged?.sourceMetadata,
+      repo,path:file.path,commit:head.sha, updatedAt:head.commit?.committer?.date, documentationPaths, documentationKey,
+      blobSha:file.sha,wiki:info.has_wiki,
     };
   })};
 }
 
 const documents = new Map<string, Promise<string>>();
-function readDocument(entry: CatalogEntry) {
-  if (!entry.documentation) return Promise.resolve("");
-  const path = entry.documentation;
-  const key = JSON.stringify([entry.repo,entry.commit,path]);
+function readDocument(url: string) {
+  const key = url;
   const existing = documents.get(key);
   if (existing) return existing;
-  const result = readSource({...entry,path,code:undefined}).catch(() => {documents.delete(key); return "";});
+  const result = readText(url,100_000).catch(error => {
+    if (error instanceof GitHubHttpError && error.status === 404) return "";
+    documents.delete(key);
+    throw error;
+  });
   if (documents.size > 100) documents.clear();
   documents.set(key,result);
   return result;
 }
 
-export async function enrichCatalogEntry(entry: CatalogEntry): Promise<CatalogEntry> {
-  if (entry.enriched) return entry;
-  const [raw, document] = await Promise.all([readSource(entry),readDocument(entry)]);
-  const {code, metadata} = macroFile(raw,entry.path);
+export const needsAnalysis = (entry: CatalogEntry) => entry.analyzerVersion !== analysisVersion || !entry.sourceHash;
+const informative = (value?: string) => Boolean(value && (value.match(/\p{L}+/gu)?.length ?? 0) >= 4 &&
+  !/^(todo|tbd|no description|description not available|описание не указано)\b/i.test(value.trim()));
+
+export async function enrichCatalogEntry(entry: CatalogEntry, force = false): Promise<CatalogEntry> {
+  if (!force && !needsAnalysis(entry)) return entry;
+  const raw = entry.code ?? await readText(`https://raw.githubusercontent.com/${entry.repo}/${entry.commit}/${encodedPath(entry.path)}`,maxCodeBytes);
+  const bytes = await crypto.subtle.digest("SHA-256",new TextEncoder().encode(raw));
+  const sourceHash = entry.sourceHash ?? Array.from(new Uint8Array(bytes),byte=>byte.toString(16).padStart(2,"0")).join("");
+  let code: string, metadata: Metadata, analysis: MacroAnalysis;
+  try {
+    ({code,metadata} = entry.code !== undefined && /\.json$/i.test(entry.path)
+      ? {code:raw,metadata:entry.sourceMetadata ?? entry.original ?? {}}
+      : macroFile(raw,entry.path));
+    analysis = analyzeMacro(code);
+  } catch (error) {
+    if (!(error instanceof UnsupportedMacroError) && !(error instanceof SyntaxError && /\.json$/i.test(entry.path))) throw error;
+    return {...entry, code:undefined, enriched:false, unsupported:true, sourceHash, analyzerVersion:analysisVersion};
+  }
   const filename = entry.path.split("/").pop()!;
-  const sidecar = entry.documentation?.toLowerCase() === entry.path.replace(/\.[^.]+$/,".md").toLowerCase();
-  const documented = documentMetadata(document,[filename,metadata.title ?? entry.name],sidecar);
+  let documented = entry.documentedMetadata;
+  let descriptionSource = entry.descriptionSource;
+  if (!documented) {
+    documented = {};
+    if (!informative(metadata.description)) {
+      const files = entry.documentationPaths ?? [entry.documentation ?? "README.md"];
+      const wiki = `https://raw.githubusercontent.com/wiki/${entry.repo}/`;
+      const urls = files.map(path=>[path,`https://raw.githubusercontent.com/${entry.repo}/${entry.commit}/${encodedPath(path)}`]);
+      if (entry.wiki) urls.push(["Wiki: Home",wiki+"Home.md"]);
+      for (const [path,url] of urls) {
+        const document = await readDocument(url);
+        if (path === "Wiki: Home" && document) urls.push(["Wiki: "+filename,
+          wiki+encodeURIComponent(filename.replace(/\.[^.]+$/,"").replace(/[ _]/g,"-"))+".md"]);
+        const sidecar = path.startsWith("Wiki: ") && path !== "Wiki: Home" ||
+          path.split("/").pop()?.toLowerCase() === filename.replace(/\.[^.]+$/,".md").toLowerCase();
+        const found = documentMetadata(document,[filename,metadata.title ?? entry.name],sidecar);
+        if (/^readme\.md$/i.test(path) && !/\b(?:pathfinder|pf2e|pf1|swade|sfrpg|coc7|wfrp4e)\b/i.test(document) &&
+          /macros?\s+(?:written\s+)?for\s+(?:5e\s+d\s*&\s*d|d\s*&\s*d\s*5e|dnd5e)\b/i.test(document.slice(0,2000))) found.system ??= "dnd5e";
+        documented = {...found,...documented};
+        if (informative(found.description)) {
+          documented.description = found.description;
+          descriptionSource = path;
+          break;
+        }
+      }
+    }
+  }
   const original = {...documented,...Object.fromEntries(Object.entries(metadata).filter(([,v])=>v !== undefined))} as Metadata;
+  if (informative(metadata.description)) descriptionSource = "Комментарии или поля исходника";
+  else if (informative(documented.description)) original.description = documented.description;
+  const description = informative(original.description) ? original.description! : analysis.description;
   const name = original.title || entry.name;
   const declaredDate = original.updated?.match(/^\d{4}-\d{2}-\d{2}$/)?.[0];
-  const system = original.system || entry.system;
+  const declaredSystem = normalizeSystem(original.system);
+  const evidence = new Set([declaredSystem,systemFromPath(entry.path),analysis.system].filter(Boolean));
+  const system = evidence.size === 1 ? [...evidence][0] : undefined;
+  const edition = original.system?.match(/\b(2014|2024)\b/)?.[1] ?? entry.path.match(/(?:^|\/)(2014|2024)(?:\/|$)/)?.[1];
   return {...entry, code, enriched:true, original:{...original,title:name}, name,
-    description:original.description ?? "", author:original.author ?? "", license:original.license ?? "Не определена",
+    description, author:original.author ?? "", license:original.license ?? "Не определена",
     compatibility:original.versions ? `Заявлено автором: ${original.versions}. Совместимость с v14 не проверена.` : "Не проверена",
-    system, inferredSystem:!original.system && Boolean(system), ...classifyMacro(original,entry.path,code),
+    system, inferredSystem:!declaredSystem && Boolean(system), ...classifyMacro(original,entry.path,code),
     translated:{title:glossaryTitle(name)}, updatedAt:declaredDate ?? entry.updatedAt,
+    analysis, analyzerVersion:analysisVersion, sourceHash, sourceMetadata:metadata, documentedMetadata:documented,
+    descriptionSource:informative(original.description) ? descriptionSource : undefined, unsupported:false,
+    rulesEdition:system === "dnd5e" && (edition === "2014" || edition === "2024") ? edition : undefined,
   };
 }
 
-async function readSource(entry: CatalogEntry) {
-  if (entry.code !== undefined) return entry.code;
-  const response = await checkedResponse(`https://raw.githubusercontent.com/${entry.repo}/${entry.commit}/${encodedPath(entry.path)}`);
+async function readText(url: string, limit: number) {
+  const response = await checkedResponse(url);
   const reader = response.body?.getReader();
   if (!reader) throw new Error("GitHub вернул пустой ответ.");
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -149,7 +216,7 @@ async function readSource(entry: CatalogEntry) {
       const { done, value } = await reader.read();
       if (done) break;
       length += value.byteLength;
-      if (length > maxCodeBytes) throw new Error("Файл больше 1 МБ.");
+      if (length > limit) throw new Error("Размер файла превышает лимит каталога.");
       code += decoder.decode(value, { stream: true });
     }
     return code + decoder.decode();

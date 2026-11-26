@@ -34,12 +34,20 @@ export function parseMetadata(text: string): Metadata {
 }
 
 export function documentMetadata(text: string, names: string[], isSidecar: boolean): Metadata {
-  const normalize = (value: string) => value.trim().replace(/\.(?:[cm]?js|json)$/i,"").replace(/[-_]/g," ").toLowerCase();
+  const normalize = (value: string) => value.replace(/\[([^\]]+)\]\([^)]+\)/g,"$1").replace(/[`*]/g,"").trim().replace(/\.(?:[cm]?js|json)$/i,"").replace(/[-_]/g," ").replace(/\s+/g," ").toLowerCase();
   const keys = new Set(names.map(normalize));
   const lines = text.split(/\r?\n/);
   const headings = lines.map(line => /^(#{1,6})\s+(.+?)\s*$/.exec(line));
   const index = headings.findIndex(h => h && keys.has(normalize(h[2])));
-  if (index < 0 && !isSidecar) return {};
+  if (index < 0 && !isSidecar) {
+    for (const line of lines) {
+      const annotation = /^\s*[-*]\s+(.+?)\s+\((.+)\)\s*$/.exec(line);
+      if (annotation && keys.has(normalize(annotation[1]))) return {description:annotation[2].slice(0,1000)};
+      const match = /^\s*[-*|]?\s*(\[[^\]]+\]\([^)]+\)|`[^`]+`|[^:|]+?)\s*(?:[:|]|\s[-–—])\s*(.+?)\s*\|?\s*$/.exec(line);
+      if (match && keys.has(normalize(match[1])) && /\p{L}{3}/u.test(match[2])) return {description:match[2].slice(0,1000)};
+    }
+    return {};
+  }
   const level = headings[index]?.[1].length ?? 0;
   const end = headings.findIndex((h,i) => i > index && h && h[1].length <= level);
   const section = lines.slice(index+1,end < 0 ? undefined : end).slice(0,150);
@@ -48,7 +56,8 @@ export function documentMetadata(text: string, names: string[], isSidecar: boole
     return heading && labels[heading.toLowerCase()] ? heading + ":" : line;
   }).join("\n"));
   if (!result.description) {
-    const paragraph = section.join("\n").trim().split(/\n\s*\n/)[0]?.trim();
+    const prose = index < 0 && isSidecar && headings[0] ? section.slice(1) : section;
+    const paragraph = prose.join("\n").trim().split(/\n\s*\n/)[0]?.trim();
     if (paragraph && !/^(#|```|[-*] |\|)/.test(paragraph)) result.description = paragraph.slice(0,1000);
   }
   return result;
@@ -69,6 +78,8 @@ export function macroFile(text: string, path: string): { code: string; metadata:
       !("command" in value) || typeof value.command !== "string") throw new UnsupportedMacroError("JSON не содержит JavaScript-макрос Foundry.");
     const doc = value as Record<string, unknown>;
     return {code:value.command, metadata:{
+      ...Object.fromEntries(["author","system","license","instructions","requirements","dependencies","versions","category"].flatMap(key=>
+        typeof doc[key] === "string" ? [[key,doc[key].slice(0,1500)]] : [])),
       title: typeof doc.name === "string" ? doc.name : undefined,
       description: typeof doc.description === "string" ? doc.description : undefined,
     }};
@@ -79,14 +90,18 @@ export function macroFile(text: string, path: string): { code: string; metadata:
   try {
     const tree = parse(prefix, {ecmaVersion:"latest", sourceType:"module",allowReturnOutsideFunction:true});
     if (tree.body.some(node => node.type === "ImportDeclaration" || node.type.startsWith("Export") ||
-      node.type === "ExpressionStatement" && /^(?:module\.exports|exports\.|require\s*\()/.test(prefix.slice(node.start,node.end)))) {
+      /^(?:module\.exports|exports\.|require\s*\()|^(?:const|let|var)\b[\s\S]*?=\s*require\s*\(/.test(prefix.slice(node.start,node.end)))) {
       throw new UnsupportedMacroError("Файл содержит модуль JavaScript, а не готовый макрос Foundry.");
     }
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     // The exact original code remains available for macro contexts the parser cannot validate.
   }
-  return {code:text, metadata:parseMetadata(header)};
+  const metadata = parseMetadata(header);
+  const paragraph = header.split(/\r?\n/).map(line=>line.replace(/^\s*(?:\/\/|\/\*+|\*+)\s?/,"").replace(/\s*\*\/$/,"").trim())
+    .find(line=>line.split(/\s+/).length >= 5 && !/^(?:@|https?:|copyright|license|\w+\s*:)/i.test(line));
+  if (!metadata.description && paragraph) metadata.description = paragraph.slice(0,1000);
+  return {code:text, metadata};
 }
 
 const categoryRules: [Category, RegExp][] = [
@@ -116,6 +131,7 @@ export function classifyMacro(metadata: Metadata, path: string, code = "") {
 }
 
 const glossary: [RegExp,string][] = [
+  [/\bdivine smite\b/gi,"Божественная кара"],[/\bhealing light\b/gi,"Исцеляющий свет"],
   [/\bshow xp\b/gi,"Показать опыт"],[/\bcombat tracker\b/gi,"Трекер боя"],
   [/\binitiative\b/gi,"инициатива"],[/\bhit points\b/gi,"очки здоровья"],
   [/\bspell(?:s)?\b/gi,"заклинания"],[/\btoken(?:s)?\b/gi,"токены"],

@@ -10,7 +10,7 @@ export function writeCatalog(storage, entries) { storage.setItem(CACHE_KEY, JSON
 export function replaceRepository(entries, repo, incoming) {
   return [...entries.filter(e => e.repo.toLowerCase() !== repo.toLowerCase()), ...incoming.map(e => {
     const old = entries.find(old => old.repo === e.repo && old.path === e.path && old.commit === e.commit);
-    if (!old) return {...e, code: undefined};
+    if (!old) return {...e, code: e.sourceHash ? e.code : undefined};
     return (old.enriched || old.unsupported) ? {...e, ...old} : {...e, code:old.code ?? e.code};
   })];
 }

@@ -18,7 +18,8 @@ import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import JsWorker from "monaco-editor/language/typescript/ts.worker.js?worker";
 import { formatScriptText, parseScriptText } from "./fate-script-text.mjs";
 import { detectDependencies } from "./dependencies";
-import { bundled, catalogSourceUrl, enrichCatalogEntry, markSourceChecked, refreshRepository, sourceCheckedAt, type CatalogEntry } from "./catalog";
+import { bundled, catalogSourceUrl, enrichCatalogEntry, GitHubRateLimitError, markSourceChecked, needsAnalysis, refreshRepository, sourceCheckedAt, type CatalogEntry } from "./catalog";
+import { catalogSystems, defaultCatalogSystem, normalizeSystem } from "./catalog-analysis";
 import { CatalogSearchDialog } from "./catalog-search-dialog";
 import { folderPath, folderTree, inFolder, redactSecrets, sameJsonValue } from "./library-tools.mjs";
 import { scriptExport } from "./script-export";
@@ -33,7 +34,8 @@ const macroIcons: Record<Category, LucideIcon> = {
   "Сражения":Swords, "Заклинания":WandSparkles, "Персонажи":Users, "Анимации":Sparkles,
   "Карты и сцены":MapIcon, "Токены":Scan, "Предметы":Backpack, "Инструменты ГМ":Shield, "Системные":Settings2, "Прочее":ScrollText,
 };
-const systemName = (id?: string) => ({dnd5e:"D&D 5e",pf2e:"Pathfinder 2e",pf1:"Pathfinder 1e"}[id ?? ""] ?? id ?? "Система не указана");
+const systemName = (id?: string) => ({dnd5e:"Dungeons & Dragons 5e","":"Все системы",universal:"Universal",pf2e:"Pathfinder 2e",pf1:"Pathfinder 1e","-":"Неизвестная система"}[id ?? "-"] ?? id);
+const entryIdentity = (entry: CatalogEntry) => JSON.stringify([entry.repo.toLowerCase(),entry.path,entry.commit]);
 const translationFields = z.object({
   title:z.string().max(200).optional(), description:z.string().max(4000).optional(),
   instructions:z.string().max(4000).optional(), requirements:z.string().max(4000).optional(), category:z.string().max(80).optional(),
@@ -361,7 +363,12 @@ function App() {
   const [catalogQuery,setCatalogQuery]=useState("");
   const [catalogRepo,setCatalogRepo]=useState("");
   const [catalogLicense,setCatalogLicense]=useState("");
-  const [catalogSystem,setCatalogSystem]=useState("");
+  const [catalogSystem,setCatalogSystem]=useState(defaultCatalogSystem);
+  const [analysisStatus,setAnalysisStatus]=useState("");
+  const [analyzing,setAnalyzing]=useState(false);
+  const analysisRunning=useRef(false);
+  const attemptedAnalysis=useRef(new Set<string>());
+  const cacheWrites=useRef(Promise.resolve());
   const [catalogCategory,setCatalogCategory]=useState("");
   const [catalogSort,setCatalogSort]=useState("name");
   const [catalogUpdated,setCatalogUpdated]=useState(0);
@@ -374,7 +381,7 @@ function App() {
   const [inventory,setInventory]=useState<ModuleSnapshot|null>(null);
   const localized = (entry: CatalogEntry): CatalogEntry => {
     const original = entry.original ?? {title:entry.name, description:entry.description};
-    const system = entry.system ?? systemFromPath(entry.path);
+    const system = normalizeSystem(entry.system) ?? (entry.analysis ? undefined : systemFromPath(entry.path));
     const fallback = classifyMacro(original,entry.path);
     const translated = {title:glossaryTitle(entry.name),...entry.translated,...translations[translationKey(entry.repo,entry.path,original)]};
     const translatedCategory = macroCategories.find(category=>category===translated.category);
@@ -420,9 +427,11 @@ function App() {
     void load();
     return ()=>{active=false;};
   },[]);
-  async function cacheCatalog(repo:string, entries:CatalogEntry[]) {
+  function cacheCatalog(repo:string, entries:CatalogEntry[] | ((current: CatalogEntry[])=>CatalogEntry[])) {
+    const write = cacheWrites.current.then(async()=>{
     const matches = (name: string) => name.toLowerCase()===repo.toLowerCase();
-    const incoming = entries.filter(entry=>matches(entry.repo));
+    const snapshot = catalogCache.current.entries;
+    const incoming = (typeof entries === "function" ? entries(snapshot) : entries).filter(entry=>matches(entry.repo));
     await invoke("save_catalog_source",{source:{repo,entries:incoming}});
     const current = catalogCache.current;
     catalogCache.current = {
@@ -431,7 +440,50 @@ function App() {
     };
     setOnline(catalogCache.current.entries);
     setCatalogSources(catalogCache.current.sources);
+    });
+    cacheWrites.current = write.catch(()=>{});
+    return write;
   }
+  async function storeAnalysis(entry: CatalogEntry) {
+    const key = entryIdentity(entry);
+    if (!catalogCache.current.entries.some(old=>entryIdentity(old)===key)) return;
+    await cacheCatalog(entry.repo,current=>current.map(old=>entryIdentity(old)===key ? entry : old));
+  }
+  async function analyzeCatalog(force = false) {
+    if (analysisRunning.current) return;
+    const attempted = attemptedAnalysis.current;
+    const candidates = (entry: CatalogEntry) => !attempted.has(entryIdentity(entry)) &&
+      (needsAnalysis(entry) || force && !entry.unsupported);
+    if (force) attempted.clear();
+    if (!catalogCache.current.entries.some(candidates)) {
+      if (force) setAnalysisStatus("В каталоге нет файлов для повторного анализа.");
+      return;
+    }
+    analysisRunning.current=true;
+    setAnalyzing(true);
+    let done = 0, failed = 0;
+    try {
+      let entry: CatalogEntry | undefined;
+      while ((entry=catalogCache.current.entries.find(candidates))) {
+        attempted.add(entryIdentity(entry));
+        setAnalysisStatus(`Анализ каталога · обработано ${done} · ${entry.name}`);
+        try { await storeAnalysis(await enrichCatalogEntry(entry,force)); done++; }
+        catch (error) {
+          if (error instanceof GitHubRateLimitError || error instanceof TypeError || error instanceof DOMException) throw error;
+          failed++;
+        }
+      }
+      setAnalysisStatus(`Анализ каталога завершён · обработано ${done}${failed ? ` · ошибок ${failed}` : ""}`);
+    } catch (error) {
+      setAnalysisStatus(`Анализ каталога приостановлен · обработано ${done}. ${report(error)}`);
+    } finally {
+      analysisRunning.current=false;
+      setAnalyzing(false);
+    }
+  }
+  useEffect(()=>{
+    if (catalog && catalogLoaded && !catalogBusy) void analyzeCatalog();
+  },[catalog,catalogLoaded,catalogBusy,online]);
   async function indexDiscoveredRepository(found: string, signal: AbortSignal) {
     const current = catalogCache.current;
     const existing = current.sources.find(source=>source.toLowerCase()===found.toLowerCase());
@@ -439,7 +491,7 @@ function App() {
     const cached = existing ? current.entries.filter(entry=>entry.repo.toLowerCase()===repo.toLowerCase()) : undefined;
     const result = await refreshRepository(repo,cached,signal);
     signal.throwIfAborted();
-    if (result.entries !== cached) await cacheCatalog(repo,replaceRepository(current.entries,repo,result.entries));
+    if (result.entries !== cached) await cacheCatalog(repo,latest=>replaceRepository(latest,repo,result.entries));
     markSourceChecked(repo,result.state);
     setCatalogUpdated(value=>value+1);
     return result.entries.filter(entry=>!entry.unsupported).length;
@@ -451,7 +503,7 @@ function App() {
       const repo=repositoryName(repository);
       const cached=catalogSources.includes(repo) ? online.filter(entry=>entry.repo===repo) : undefined;
       const result=await refreshRepository(repo,cached);
-      await cacheCatalog(repo,replaceRepository(online,repo,result.entries));
+      await cacheCatalog(repo,latest=>replaceRepository(latest,repo,result.entries));
       markSourceChecked(repo,result.state);
       setCatalogUpdated(value=>value+1);
     } catch(error) {
@@ -466,17 +518,12 @@ function App() {
     if (!importDirect) macroDialog.current?.showModal();
     try {
       const next = await enrichCatalogEntry(entry);
+      await storeAnalysis(next);
+      if (next.unsupported) throw new UnsupportedMacroError("Файл исключён: это не самостоятельный макрос Foundry.");
       if (importDirect) importMacro(next);
       else setPreviewed(next);
-      if (online.some(old=>old.path===entry.path && old.repo===entry.repo && old.commit===entry.commit)) {
-        await cacheCatalog(entry.repo,online.map(old=>old.path===entry.path && old.repo===entry.repo && old.commit===entry.commit ? next : old));
-      }
     } catch(error) {
       setCatalogError(report(error));
-      if (error instanceof UnsupportedMacroError) {
-        try { await cacheCatalog(entry.repo,online.map(old=>old.path===entry.path && old.repo===entry.repo && old.commit===entry.commit ? {...old,unsupported:true} : old)); }
-        catch (cacheError) {setCatalogError(report(cacheError));}
-      }
     }
     finally {openingMacro.current=false;setCatalogBusy(false);}
   }
@@ -731,12 +778,13 @@ function App() {
       <div className="toolbar catalog-filters">
         <input aria-label="Поиск макросов" placeholder="Поиск макросов" value={catalogQuery} onChange={e=>setCatalogQuery(e.target.value)}/>
         <select aria-label="Репозиторий" value={catalogRepo} onChange={e=>setCatalogRepo(e.target.value)}><option value="">Все репозитории</option>{[...new Set(allCatalog.map(e=>e.repo))].map(r=><option key={r}>{r}</option>)}</select>
-        <select aria-label="Игровая система" value={catalogSystem} onChange={e=>setCatalogSystem(e.target.value)}><option value="">Все системы</option>{[...new Set(allCatalog.map(e=>e.system ?? "-"))].map(id=><option key={id} value={id}>{systemName(id === "-" ? undefined : id)}</option>)}</select>
+        <select aria-label="Игровая система" value={catalogSystem} onChange={e=>setCatalogSystem(e.target.value)}>{[...new Set([...catalogSystems,...allCatalog.flatMap(e=>e.system ? [e.system] : [])])].map(id=><option key={id} value={id}>{systemName(id)}</option>)}</select>
         <select aria-label="Категория макроса" value={catalogCategory} onChange={e=>setCatalogCategory(e.target.value)}><option value="">Все категории</option>{macroCategories.map(name=><option key={name}>{name}</option>)}</select>
         <select aria-label="Лицензия" value={catalogLicense} onChange={e=>setCatalogLicense(e.target.value)}><option value="">Все лицензии</option>{[...new Set(allCatalog.map(e=>e.license))].map(r=><option key={r}>{r}</option>)}</select>
         <select aria-label="Сортировка" value={catalogSort} onChange={e=>setCatalogSort(e.target.value)}><option value="name">По названию</option><option value="date">Сначала новые</option></select>
       </div>
       {catalogError && <p className="catalog-status" role="status">{catalogError}</p>}
+      {analysisStatus && <p className="catalog-status" role="status">{analysisStatus}</p>}
       {!visibleCatalog.length && <p className="empty">Макросы не найдены.</p>}
       <div className="macro-grid">{visibleCatalog.map(entry=>{
         const category=entry.category ?? "Прочее";
@@ -745,8 +793,8 @@ function App() {
           <div className="macro-category"><span className="macro-icon" data-category={category}><Icon size={19} aria-hidden="true"/></span>{category}{entry.inferredCategory ? " · предположительно" : ""}</div>
           <h2>{entry.translated?.title || entry.name}</h2>
           {entry.translated?.title && entry.translated.title!==entry.name && <small lang="en">{entry.name}</small>}
-          <p>{entry.translated?.description || entry.description || (entry.enriched ? "Описание не указано." : "Описание загружается при открытии.")}</p>
-          <small>{systemName(entry.system)}{entry.inferredSystem ? " · по пути файла" : ""}</small>
+          <p>{entry.translated?.description || entry.description || "Ожидает анализа."}</p>
+          <small>{systemName(entry.system)}{entry.inferredSystem ? " · предположительно" : ""}</small>
           <small className="macro-source">{entry.repo}</small>
           <div className="macro-actions"><button disabled={catalogBusy} onClick={()=>void inspectMacro(entry)}>Подробнее</button><button disabled={catalogBusy} onClick={()=>void inspectMacro(entry,true)}>В библиотеку</button></div>
         </article>;
@@ -756,6 +804,8 @@ function App() {
         <div className="catalog-dialog-content">
           <label>Публичный репозиторий<input aria-label="Публичный репозиторий GitHub" value={repository} onChange={e=>setRepository(e.target.value)}/></label>
           <button disabled={catalogBusy} onClick={()=>void refreshCatalog()}>Обновить каталог</button>
+          <button disabled={analyzing || catalogBusy} onClick={()=>void analyzeCatalog(true)}>Повторить анализ каталога</button>
+          {analysisStatus && <p role="status">{analysisStatus}</p>}
           <ul key={catalogUpdated}>{catalogSources.map(repo=><li key={repo}><button onClick={()=>setRepository(repo)}>{repo}</button> <small>{sourceCheckedAt(repo) ? new Date(sourceCheckedAt(repo)!).toLocaleString("ru") : "Дата обновления неизвестна"}</small></li>)}</ul>
           <label className="file">Загрузить переводы JSON<input type="file" accept=".json" onChange={async e=>{
             const file=e.target.files?.[0];e.target.value="";if(!file)return;
@@ -778,7 +828,8 @@ function App() {
             <dl className="script-card-details">
               <dt>Оригинал</dt><dd>{detail.name}</dd><dt>Автор</dt><dd>{detail.author || "Не указан"}</dd>
               <dt>Категория</dt><dd>{detail.category}{detail.inferredCategory ? " · предположительно" : ""}</dd>
-              <dt>Система</dt><dd>{systemName(detail.system)}{detail.inferredSystem ? " · по пути файла" : ""}</dd>
+              <dt>Система</dt><dd>{systemName(detail.system)}{detail.inferredSystem ? " · предположительно" : ""}</dd>
+              {detail.rulesEdition && <><dt>Редакция правил</dt><dd>{detail.rulesEdition}</dd></>}
               <dt>Foundry</dt><dd>{detail.compatibility}</dd><dt>Лицензия файла</dt><dd>{detail.license}</dd>
               {detail.repoLicense && <><dt>Лицензия репозитория</dt><dd>{detail.repoLicense}</dd></>}
               <dt>Источник</dt><dd><a href={catalogSourceUrl(detail)} target="_blank" rel="noreferrer">{detail.repo} / {detail.path}</a></dd>
@@ -787,9 +838,14 @@ function App() {
               {detail.original?.dependencies && <><dt>Заявленные зависимости</dt><dd>{detail.original.dependencies}</dd></>}
               {!!detail.dependencies?.length && <><dt>Возможные зависимости</dt><dd>{detail.dependencies.join(", ")}</dd></>}
             </dl>
-            <p>{detail.translated?.description || detail.description || "Описание не указано."}</p>
-            {(detail.translated?.instructions || detail.original?.instructions) && <><h3>Инструкции</h3><p>{detail.translated?.instructions || detail.original?.instructions}</p></>}
+            <h3>Краткое описание</h3>
+            <p>{detail.translated?.description || detail.description || "Ожидает анализа."}</p>
+            {detail.enriched && <small>{detail.translated?.description ? "Перевод" : detail.descriptionSource || "Статический анализ исходника"}</small>}
+            {detail.analysis && detail.analysis.description !== detail.description && <><h3>Что обнаружено в коде</h3><p>{detail.analysis.description}</p></>}
+            {(detail.translated?.instructions || detail.original?.instructions || detail.analysis?.instructions) && <><h3>Инструкции</h3><p>{detail.translated?.instructions || detail.original?.instructions || detail.analysis?.instructions}</p></>}
             {(detail.translated?.requirements || detail.original?.requirements) && <><h3>Требования к запуску</h3><p>{detail.translated?.requirements || detail.original?.requirements}</p></>}
+            {!!detail.analysis?.requirements.length && <><h3>Условия, обнаруженные в коде</h3><ul>{detail.analysis.requirements.map(text=><li key={text}>{text}</li>)}</ul></>}
+            {!!detail.analysis?.changes.length && <><h3>Возможные изменения игровых данных</h3><ul>{detail.analysis.changes.map(text=><li key={text}>{text}</li>)}</ul></>}
             {detail.enriched && detail.original && <button onClick={()=>void navigator.clipboard.writeText(JSON.stringify({
               [translationKey(detail.repo,detail.path,detail.original!)]:{title:detail.original!.title,description:detail.original!.description,instructions:detail.original!.instructions,requirements:detail.original!.requirements,category:detail.original!.category},
             },null,2)).then(()=>setCatalogError("Шаблон перевода скопирован. Переведите значения и загрузите JSON в настройках источников.")).catch(error=>setCatalogError(report(error)))}>Копировать шаблон перевода</button>}
