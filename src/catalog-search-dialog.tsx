@@ -72,29 +72,30 @@ export function CatalogSearchDialog({index, disabled}: {
     <button className="primary" disabled={disabled} onClick={()=>dialog.current?.showModal()}>
       <Search size={16} aria-hidden="true"/> Найти новые макросы
     </button>
-    <dialog ref={dialog} className="catalog-dialog discovery-dialog" aria-labelledby="discovery-title"
+    <dialog ref={dialog} className="discovery-dialog" aria-labelledby="discovery-title"
       onCancel={event=>{if (controller.current) event.preventDefault();}}>
-      <div className="toolbar"><h2 id="discovery-title">Найти новые макросы</h2>
+      <div className="discovery-header"><h2 id="discovery-title">Найти новые макросы</h2>
         <button disabled={running} onClick={()=>dialog.current?.close()}>Закрыть</button>
       </div>
-      <div className="catalog-dialog-content">
+      <div className="discovery-content">
         <div className="discovery-controls">
           <button disabled={running} onClick={()=>changeSelection(presets.map(preset=>preset.id))}>Выбрать все</button>
           <button disabled={running} onClick={()=>changeSelection([])}>Снять все</button>
+          <span className="discovery-count" role="status">Выбрано {selected.length} из {presets.length}</span>
         </div>
         <div className="discovery-presets" role="group" aria-label="Направления поиска">
           {presets.map(preset=>{
             const Icon = icons[preset.icon] ?? ScrollText;
             const checked = selected.includes(preset.id);
             return <label key={preset.id} className="discovery-preset">
+              <span className="discovery-icon" aria-hidden="true"><Icon size={18}/></span>
+              <span className="discovery-title">{preset.title}</span>
               <input type="checkbox" disabled={running} checked={checked} onChange={event=>
                 changeSelection(event.target.checked ? [...selected,preset.id] : selected.filter(id=>id!==preset.id))}/>
-              <span className="macro-icon"><Icon size={18} aria-hidden="true"/></span>
-              <span>{preset.title}</span>
             </label>;
           })}
         </div>
-        <label>Дополнительный запрос<input maxLength={180} disabled={running} value={custom} onChange={event=>setCustom(event.target.value)}/></label>
+        <label className="discovery-query">Дополнительный запрос<input maxLength={180} disabled={running} value={custom} onChange={event=>setCustom(event.target.value)}/></label>
         <details className="discovery-preview" open>
           <summary>Сформированные запросы ({queries.length})</summary>
           {queries.length ? <ol lang="en">{queries.map(query=><li key={query}>{query}</li>)}</ol> : <p>Выберите направление или введите запрос.</p>}
@@ -107,14 +108,14 @@ export function CatalogSearchDialog({index, disabled}: {
           {waiting && <p>Очередь сохранена. Продолжить можно после {new Date(retryAt).toLocaleTimeString("ru")}.</p>}
         </div>}
         {!queue && notice && <p role="alert">{notice}</p>}
-        <div className="discovery-controls">
+      </div>
+      <div className="discovery-footer">
           {running ? <button onClick={()=>controller.current?.abort()}>Остановить поиск</button> : <>
             {unfinished && <button className="primary" disabled={waiting} onClick={()=>void start(queue)}>Продолжить поиск</button>}
             <button className={unfinished ? undefined : "primary"} disabled={!queries.length || waiting} onClick={()=>{
               if (!unfinished || confirm("Начать новый поиск и заменить сохранённую очередь?")) void start();
             }}>Начать поиск</button>
           </>}
-        </div>
       </div>
     </dialog>
   </>;
