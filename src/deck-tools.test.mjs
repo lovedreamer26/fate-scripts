@@ -1,0 +1,4 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {defaultDeck,readDeck,deckKey,moveButton,worldMatches} from './deck-tools.mjs';
+test('deck roundtrip and invalid configuration',()=>{const d=defaultDeck();d.tabs[0].buttons.push({id:'b',scriptId:'s',name:'Макрос',image:''});assert.deepEqual(readDeck({getItem:k=>k===deckKey?JSON.stringify(d):null}),d);assert.throws(()=>readDeck({getItem:()=>'{"tabs":[]}'}));});
+test('reorder preserves references',()=>{const a=[{id:'a',scriptId:'1'},{id:'b',scriptId:'2'}];assert.deepEqual(moveButton(a,'a','b'),[a[1],a[0]]);assert.equal(moveButton(a,'missing','b'),a)});
+test('world isolation',()=>{assert.equal(worldMatches('http://localhost:30000#w','http://localhost:30000','w'),true);assert.equal(worldMatches('http://localhost:30000#w','http://localhost:30000','x'),false);assert.equal(worldMatches('','http://localhost:30000','w'),true);assert.equal(worldMatches('','http://localhost:30000',''),false)});

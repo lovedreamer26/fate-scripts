@@ -1,0 +1,13 @@
+{
+  "id": "fate-scripts-bridge",
+  "title": "Fate Scripts Bridge",
+  "description": "Диагностика, инвентаризация, сессия GM и запись макросов с подтверждением.",
+  "version": "0.2.2",
+  "compatibility": {
+    "minimum": "14",
+    "maximum": "14"
+  },
+  "esmodules": [
+    "probe.mjs"
+  ]
+}

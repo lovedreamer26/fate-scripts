@@ -1,0 +1,28 @@
+/** Common globals in Foundry VTT v14 script macros. */
+declare const game: {
+  ready: boolean;
+  version: string;
+  world: { id: string; title: string };
+  user: { id: string; name: string; isGM: boolean };
+  modules: Map<string, { id: string; title: string; version: string; active: boolean }>;
+  macros: Map<string, { id: string; name: string; execute(scope?: object): Promise<unknown> }>;
+};
+declare const canvas: {
+  ready: boolean;
+  tokens: { controlled: readonly typeof token[] };
+  scene: { id: string; name: string } | null;
+};
+declare const ui: {
+  notifications: {
+    info(message: string): void;
+    warn(message: string): void;
+    error(message: string): void;
+  };
+};
+declare const actor: { id: string; name: string } | null;
+declare const token: { id: string; name: string; actor: typeof actor } | null;
+declare const scope: {
+  fateScriptsConsole?: Pick<Console, "log" | "warn" | "error">;
+  [key: string]: unknown;
+};
+declare function fromUuid(uuid: string): Promise<unknown>;
