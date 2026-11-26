@@ -5,7 +5,7 @@ export function repositoryName(value) {
 }
 export function filterCatalog(entries, query, repo, license) {
   const q = query.trim().toLocaleLowerCase('ru');
-  return entries.filter(e => (!repo || e.repo.toLowerCase() === repo.toLowerCase()) && (!license || e.license === license) && [e.name,e.description,e.path,e.repo,e.author].some(v => v.toLocaleLowerCase('ru').includes(q)));
+  return entries.filter(e => (!repo || e.repo.toLowerCase() === repo.toLowerCase()) && (!license || e.license === license) && [e.name,e.description,e.path,e.repo,e.author,e.original?.title,e.translated?.title,e.translated?.description].some(v => typeof v === "string" && v.toLocaleLowerCase("ru").includes(q)));
 }
 export function dependencyStatus(ids, snapshot, origin, worldId) {
   const usable = snapshot && snapshot.serverOrigin === origin && snapshot.worldId === worldId && Array.isArray(snapshot.modules);

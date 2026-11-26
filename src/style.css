@@ -132,3 +132,39 @@ nav, .toolbar, details, .exchange { border-color: var(--line); }
 }
 main { min-width: 0; overflow: hidden; } .catalog > .toolbar { flex-wrap: wrap; }
 .file { position: relative; } .file > input[type="file"] { inset: 0 auto auto 0; width: 1px; height: 1px; padding: 0; }
+
+/* Macro catalogue */
+.studio-sidebar .create-folder { display: grid; grid-template-columns: minmax(0,1fr) max-content; }
+.studio-sidebar .create-folder > button { white-space: nowrap; overflow-wrap: normal; }
+.catalog { container: macro-catalog / inline-size; }
+.catalog-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px; }
+.catalog-heading h1 { margin: 0; font-size: 23px; }
+.catalog-filters { padding: 0 16px 16px; flex-wrap: wrap; }
+.catalog-filters > input { min-width: 150px; }
+.catalog-filters > select { flex: 1 1 125px; min-width: 0; max-width: 100%; }
+.catalog-status { margin: 0 16px 8px; color: var(--gold); }
+.macro-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 0 16px 16px; align-content: start; }
+@container macro-catalog (min-width: 1100px) { .macro-grid { grid-template-columns: repeat(3,minmax(0,1fr)); } }
+@container macro-catalog (min-width: 1480px) { .macro-grid { grid-template-columns: repeat(4,minmax(0,1fr)); } }
+.macro-card { display: flex; flex-direction: column; min-width: 0; padding: 14px; gap: 5px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); overflow-wrap: anywhere; }
+.macro-card h2 { font-size: 17px; margin: 5px 0 0; }
+.macro-card p { flex: 1; margin: 5px 0 8px; }
+.macro-category { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+.macro-icon { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 8px; background: #382954; color: #c5a9fa; }
+.macro-icon[data-category="Сражения"] { background: #4e2b39; color: #ffa5a8; }
+.macro-icon[data-category="Заклинания"], .macro-icon[data-category="Анимации"] { background: #462c5f; color: #dfacff; }
+.macro-icon[data-category="Персонажи"], .macro-icon[data-category="Токены"] { background: #21483f; color: #8be0c3; }
+.macro-icon[data-category="Карты и сцены"], .macro-icon[data-category="Системные"] { background: #233c56; color: #9fcfff; }
+.macro-icon[data-category="Предметы"], .macro-icon[data-category="Инструменты ГМ"] { background: #483921; color: #f0c780; }
+.macro-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.macro-actions button:last-child { border-color: #7957ac; }
+.catalog-dialog { width: min(850px,94vw); max-height: 88vh; border: 1px solid var(--line); background: var(--panel); padding: 0; overflow: auto; }
+.catalog-dialog::backdrop { background: #101016c9; }
+.catalog-dialog .toolbar { flex-wrap: wrap; }
+.catalog-dialog .toolbar:first-child h2 { margin-right: auto; font-size: 18px; }
+.catalog-dialog-content { padding: 14px; overflow-wrap: anywhere; }
+.catalog-dialog-content label { display: block; margin-bottom: 8px; }
+.catalog-dialog-content label > input:not([type="file"]) { display: block; width: 100%; margin-top: 4px; }
+.catalog-dialog-content pre { white-space: pre-wrap; }
+.catalog-dialog a { color: #cfbbff; }
+.catalog-dialog .code { height: min(61vh,690px); }

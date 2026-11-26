@@ -8,7 +8,11 @@ export function readCatalog(storage) {
 }
 export function writeCatalog(storage, entries) { storage.setItem(CACHE_KEY, JSON.stringify(entries)); }
 export function replaceRepository(entries, repo, incoming) {
-  return [...entries.filter(e => e.repo.toLowerCase() !== repo.toLowerCase()), ...incoming.map(e => ({...e, code: entries.find(old => old.repo === e.repo && old.path === e.path && old.commit === e.commit)?.code}))];
+  return [...entries.filter(e => e.repo.toLowerCase() !== repo.toLowerCase()), ...incoming.map(e => {
+    const old = entries.find(old => old.repo === e.repo && old.path === e.path && old.commit === e.commit);
+    if (!old) return {...e, code: undefined};
+    return (old.enriched || old.unsupported) ? {...e, ...old} : {...e, code:old.code ?? e.code};
+  })];
 }
 export function dependencyIds(text) {
   return [...new Set(text.split(/[\s,;]+/).filter(Boolean).map(id => { if (!/^[a-z0-9][a-z0-9_-]{0,127}$/i.test(id)) throw new Error('Некорректный ID модуля: '+id); return id; }))].sort();
