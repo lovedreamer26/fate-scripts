@@ -28,15 +28,37 @@ const maxCodeBytes = 1_000_000;
 const revisionUrl = (entry: CatalogEntry) => `https://github.com/${entry.repo}/blob/${entry.commit}/${encodedPath(entry.path)}`;
 const encodedPath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 
-async function checkedResponse(url: string, etag?: string) {
-  const response = await fetch(url, { credentials: "omit", redirect: "error", signal: AbortSignal.timeout(8000), headers: etag ? {"If-None-Match":etag} : undefined });
-  if (response.status === 304 && etag) return response;
-  if (response.status === 429 || response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0") {
-    throw new Error("Достигнут лимит запросов GitHub. Повторите обновление позже.");
+export class GitHubRateLimitError extends Error {
+  constructor(readonly retryAt: number) {
+    super("Достигнут лимит запросов GitHub.");
   }
-  if (!response.ok) throw new Error(`GitHub вернул HTTP ${response.status}.`);
+}
+
+export async function checkedResponse(url: string, etag?: string, signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(8000);
+  const response = await fetch(url, { credentials: "omit", redirect: "error", signal: signal ? AbortSignal.any([signal, timeout]) : timeout, headers: etag ? {"If-None-Match":etag} : undefined });
+  if (response.status === 304 && etag) return response;
+  const retry = response.headers.get("retry-after");
+  const exhausted = response.headers.get("x-ratelimit-remaining") === "0";
+  if (response.status === 429 || response.status === 403 && (exhausted || retry !== null ||
+    /rate limit|abuse detection/i.test(await response.clone().text()))) {
+    const reset = exhausted ? Number(response.headers.get("x-ratelimit-reset")) * 1000 : 0;
+    const now = Date.now();
+    const hint = retry === null ? 0 : /^\d+$/.test(retry) ? now + Number(retry) * 1000 : Date.parse(retry);
+    const retryAt = Math.max(reset || 0, hint || 0);
+    throw new GitHubRateLimitError(retryAt > now ? retryAt : now + 60_000);
+  }
+  if (!response.ok) throw new GitHubHttpError(response.status);
   return response;
 }
+
+export class GitHubHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`GitHub вернул HTTP ${status}.`);
+  }
+}
+
+export class IncompleteRepositoryError extends Error {}
 
 type SourceState = {etag?:string; branch?:string; commit?:string; checkedAt?:string};
 function state(repo: string): SourceState {
@@ -47,22 +69,22 @@ export function sourceCheckedAt(repo: string) { return state(repo).checkedAt; }
 export function markSourceChecked(repo: string, options: SourceState = {}) {
   localStorage.setItem("catalog.source."+repo, JSON.stringify({...state(repo),...options,checkedAt:new Date().toISOString()}));
 }
-export async function refreshRepository(repo: string, cached?: CatalogEntry[]): Promise<{entries: CatalogEntry[]; state: SourceState}> {
+export async function refreshRepository(repo: string, cached?: CatalogEntry[], signal?: AbortSignal): Promise<{entries: CatalogEntry[]; state: SourceState}> {
   if (!/^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9_.-]{1,100}$/i.test(repo) || /\/(?:\.|\.\.)$/.test(repo)) {
     throw new Error("Укажите публичный репозиторий в формате владелец/репозиторий.");
   }
   const api = `https://api.github.com/repos/${repo}`;
-  const json = async (url: string) => (await checkedResponse(url)).json();
+  const json = async (url: string) => (await checkedResponse(url, undefined, signal)).json();
   const info = repository.parse(await json(api));
   const previous = state(repo);
   const response = await checkedResponse(`${api}/commits/${encodeURIComponent(info.default_branch)}`,
-    cached && previous.branch === info.default_branch ? previous.etag : undefined);
+    cached && previous.branch === info.default_branch ? previous.etag : undefined, signal);
   if (response.status === 304 && cached) return {entries:cached,state:previous};
   const head = revision.parse(await response.json());
   const next = {etag:response.headers.get("etag") ?? undefined, branch:info.default_branch, commit:head.sha};
   if (cached && previous.commit === head.sha) return {entries:cached,state:next};
   const listing = paths.parse(await json(`${api}/git/trees/${head.sha}?recursive=1`));
-  if (listing.truncated) throw new Error("GitHub вернул неполное дерево. Выберите репозиторий меньшего размера.");
+  if (listing.truncated) throw new IncompleteRepositoryError("GitHub вернул неполное дерево. Выберите репозиторий меньшего размера.");
   const documents = new Map(listing.tree.filter(file => file.type === "blob" && /\.md$/i.test(file.path) &&
     (file.size ?? Infinity) <= 100_000).map(file => [file.path.toLowerCase(),file.path]));
   return {state:next,entries:listing.tree.filter(file => file.type === "blob" && macroCandidate(file.path) &&

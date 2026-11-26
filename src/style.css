@@ -137,7 +137,9 @@ main { min-width: 0; overflow: hidden; } .catalog > .toolbar { flex-wrap: wrap; 
 .studio-sidebar .create-folder { display: grid; grid-template-columns: minmax(0,1fr) max-content; }
 .studio-sidebar .create-folder > button { white-space: nowrap; overflow-wrap: normal; }
 .catalog { container: macro-catalog / inline-size; }
-.catalog-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px; }
+.catalog-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 16px; }
+.catalog-heading-actions, .discovery-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.catalog-heading-actions button { display: inline-flex; align-items: center; gap: 8px; }
 .catalog-heading h1 { margin: 0; font-size: 23px; }
 .catalog-filters { padding: 0 16px 16px; flex-wrap: wrap; }
 .catalog-filters > input { min-width: 150px; }
@@ -168,3 +170,12 @@ main { min-width: 0; overflow: hidden; } .catalog > .toolbar { flex-wrap: wrap; 
 .catalog-dialog-content pre { white-space: pre-wrap; }
 .catalog-dialog a { color: #cfbbff; }
 .catalog-dialog .code { height: min(61vh,690px); }
+.discovery-presets { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(210px,100%),1fr)); gap: 8px; margin: 12px 0; }
+.discovery-dialog .discovery-preset { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); cursor: pointer; }
+.discovery-preset:has(input:checked) { border-color: var(--accent); }
+.discovery-preset input { flex: none; width: auto; accent-color: var(--accent); }
+.discovery-preview, .discovery-progress { margin: 12px 0; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.discovery-preview summary { cursor: pointer; }
+.discovery-preview ol { max-height: 130px; overflow-y: auto; margin-bottom: 0; }
+.discovery-progress progress { width: 100%; accent-color: var(--accent); }
+.discovery-progress p { margin: 6px 0 0; }

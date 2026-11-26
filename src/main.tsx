@@ -19,6 +19,7 @@ import JsWorker from "monaco-editor/language/typescript/ts.worker.js?worker";
 import { formatScriptText, parseScriptText } from "./fate-script-text.mjs";
 import { detectDependencies } from "./dependencies";
 import { bundled, catalogSourceUrl, enrichCatalogEntry, markSourceChecked, refreshRepository, sourceCheckedAt, type CatalogEntry } from "./catalog";
+import { CatalogSearchDialog } from "./catalog-search-dialog";
 import { folderPath, folderTree, inFolder, redactSecrets, sameJsonValue } from "./library-tools.mjs";
 import { scriptExport } from "./script-export";
 import "./style.css";
@@ -353,6 +354,8 @@ function App() {
   const [repository, setRepository] = useState("thejoester/foundryvtt-macros");
   const [online, setOnline] = useState<CatalogEntry[]>([]);
   const [catalogSources,setCatalogSources]=useState<string[]>([]);
+  const [catalogLoaded,setCatalogLoaded]=useState(false);
+  const catalogCache = useRef<{entries: CatalogEntry[]; sources: string[]}>({entries:[],sources:[]});
   const [previewed, setPreviewed] = useState<CatalogEntry>();
   const [catalogBusy, setCatalogBusy] = useState(false);
   const [catalogQuery,setCatalogQuery]=useState("");
@@ -406,16 +409,40 @@ function App() {
           await invoke("import_catalog_sources",{sources:[...sources.values()]});
         }
         const saved=await invoke<Source[]>("load_catalog");
-        if(active){setOnline(saved.flatMap(source=>source.entries));setCatalogSources(saved.map(source=>source.repo));}
+        if(active){
+          catalogCache.current={entries:saved.flatMap(source=>source.entries),sources:saved.map(source=>source.repo)};
+          setOnline(catalogCache.current.entries);
+          setCatalogSources(catalogCache.current.sources);
+          setCatalogLoaded(true);
+        }
       } catch(error){if(active)setMessage(report(error));}
     }
     void load();
     return ()=>{active=false;};
   },[]);
   async function cacheCatalog(repo:string, entries:CatalogEntry[]) {
-    await invoke("save_catalog_source",{source:{repo,entries:entries.filter(entry=>entry.repo.toLowerCase()===repo.toLowerCase())}});
-    setOnline(entries);
-    setCatalogSources(previous=>previous.some(source=>source.toLowerCase()===repo.toLowerCase())?previous:[...previous,repo]);
+    const matches = (name: string) => name.toLowerCase()===repo.toLowerCase();
+    const incoming = entries.filter(entry=>matches(entry.repo));
+    await invoke("save_catalog_source",{source:{repo,entries:incoming}});
+    const current = catalogCache.current;
+    catalogCache.current = {
+      entries:[...current.entries.filter(entry=>!matches(entry.repo)),...incoming],
+      sources:current.sources.some(matches)?current.sources:[...current.sources,repo],
+    };
+    setOnline(catalogCache.current.entries);
+    setCatalogSources(catalogCache.current.sources);
+  }
+  async function indexDiscoveredRepository(found: string, signal: AbortSignal) {
+    const current = catalogCache.current;
+    const existing = current.sources.find(source=>source.toLowerCase()===found.toLowerCase());
+    const repo = existing ?? found;
+    const cached = existing ? current.entries.filter(entry=>entry.repo.toLowerCase()===repo.toLowerCase()) : undefined;
+    const result = await refreshRepository(repo,cached,signal);
+    signal.throwIfAborted();
+    if (result.entries !== cached) await cacheCatalog(repo,replaceRepository(current.entries,repo,result.entries));
+    markSourceChecked(repo,result.state);
+    setCatalogUpdated(value=>value+1);
+    return result.entries.filter(entry=>!entry.unsupported).length;
   }
   async function refreshCatalog() {
     if (catalogBusy) return;
@@ -697,7 +724,10 @@ function App() {
       </div>}
     </aside>
     {deck ? <section className="workspace deck-workspace"><Deck scripts={scripts} onSelect={setDeckScript}/><h2>Выбранный скрипт: {scripts.find(s=>s.id===deckScript)?.name??"—"}</h2></section> : catalog ? <section className="workspace catalog">
-      <div className="catalog-heading"><h1>Каталог макросов</h1><button onClick={()=>{setCatalogError("");sourceDialog.current?.showModal()}}>Источники GitHub</button></div>
+      <div className="catalog-heading"><h1>Каталог макросов</h1><div className="catalog-heading-actions">
+        <CatalogSearchDialog index={indexDiscoveredRepository} disabled={catalogBusy || !catalogLoaded}/>
+        <button onClick={()=>{setCatalogError("");sourceDialog.current?.showModal()}}>Источники GitHub</button>
+      </div></div>
       <div className="toolbar catalog-filters">
         <input aria-label="Поиск макросов" placeholder="Поиск макросов" value={catalogQuery} onChange={e=>setCatalogQuery(e.target.value)}/>
         <select aria-label="Репозиторий" value={catalogRepo} onChange={e=>setCatalogRepo(e.target.value)}><option value="">Все репозитории</option>{[...new Set(allCatalog.map(e=>e.repo))].map(r=><option key={r}>{r}</option>)}</select>

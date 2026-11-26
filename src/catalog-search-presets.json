@@ -1,0 +1,111 @@
+[
+  {
+    "id": "all",
+    "title": "Все макросы D&D 5e",
+    "icon": "ScrollText",
+    "queries": [
+      "foundry vtt dnd5e macros",
+      "foundry vtt d&d 5e macros",
+      "fvtt dnd5e scripts"
+    ]
+  },
+  {
+    "id": "spells",
+    "title": "Заклинания",
+    "icon": "Sparkles",
+    "queries": [
+      "foundry 5e spell macros",
+      "foundry dnd5e spell automation"
+    ]
+  },
+  {
+    "id": "classes",
+    "title": "Способности классов",
+    "icon": "Users",
+    "queries": [
+      "foundry dnd5e class feature macros",
+      "foundry 5e subclass automation"
+    ]
+  },
+  {
+    "id": "combat",
+    "title": "Боевые механики",
+    "icon": "Swords",
+    "queries": [
+      "foundry dnd5e combat macros",
+      "foundry 5e combat automation"
+    ]
+  },
+  {
+    "id": "2024",
+    "title": "Правила D&D 2024",
+    "icon": "BookOpen",
+    "queries": [
+      "foundry dnd5e 2024 macros",
+      "foundry 5e 2024 automation"
+    ]
+  },
+  {
+    "id": "effects",
+    "title": "Анимации и эффекты",
+    "icon": "WandSparkles",
+    "queries": [
+      "foundry jb2a macros",
+      "foundry sequencer macros"
+    ]
+  },
+  {
+    "id": "midi",
+    "title": "Midi-QOL",
+    "icon": "Zap",
+    "queries": [
+      "foundry midi-qol macros",
+      "foundry midi-qol spell automation"
+    ]
+  },
+  {
+    "id": "tokens",
+    "title": "Токены и персонажи",
+    "icon": "Scan",
+    "queries": [
+      "foundry token macros",
+      "foundry dnd5e actor macros"
+    ]
+  },
+  {
+    "id": "scenes",
+    "title": "Карты и сцены",
+    "icon": "Map",
+    "queries": [
+      "foundry vtt scene macros",
+      "foundry vtt wall lighting macros"
+    ]
+  },
+  {
+    "id": "gm",
+    "title": "Инструменты мастера",
+    "icon": "Shield",
+    "queries": [
+      "foundry vtt gm macros",
+      "foundry vtt utility macros"
+    ]
+  },
+  {
+    "id": "items",
+    "title": "Предметы и инвентарь",
+    "icon": "Backpack",
+    "queries": [
+      "foundry dnd5e item macros",
+      "foundry 5e inventory macros"
+    ]
+  },
+  {
+    "id": "healing",
+    "title": "Лечение и состояния",
+    "icon": "HeartPulse",
+    "queries": [
+      "foundry dnd5e healing macros",
+      "foundry 5e condition automation"
+    ]
+  }
+]
